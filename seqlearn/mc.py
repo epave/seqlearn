@@ -1,6 +1,3 @@
-import pandas as pd
-import numpy as np
-
 from collections import Counter
 
 from sklearn.base import BaseEstimator
@@ -66,12 +63,11 @@ class MarkovChainModel(BaseEstimator):
             Returns an instance of self.
         """
 
-        sequences = [data[self.target_label][data[self.sequence_split_label] == val]
-                     for val in data[self.sequence_split_label].unique()]
+        sequences = [data[target_label][data[sequence_split_label] == val]
+                     for val in data[sequence_split_label].unique()]
 
         self.suffix_tree.fit(sequences=sequences)
-        self.transition_graph = TransitionGraph()
-        self.transition_graph.fit(self.suffix_tree, sequences)
+        self.transition_graph = TransitionGraph(self.suffix_tree)
 
         # encoding the symbols to 0, 1, ...
         self.encoder = LabelEncoder()
@@ -86,11 +82,11 @@ class MarkovChainModel(BaseEstimator):
         # calculate initial probability of each symbol
         self.init_probas = pd.Series(
             index=self.transition_graph.to_matrix().index).fillna(0)
-        for symbol, proba in Counter([seq[0] for seq in sequences]).items():
+        for symbol, proba in Counter([seq[0] for seq in sequences]):
             self.init_probas.ix[symbol] = proba
 
         # calculate symbol frequences in the sequences
-        self.symbol_freqs = Counter(''.join(pd.concat(sequences).values))
+        self.symbol_freqs = Counter(''.join(sequences))
         self.symbol_freqs = {
             key: val / sum(self.symbol_freqs.values()) for key, val in self.symbol_freqs.items()}
 
@@ -114,28 +110,24 @@ class MarkovChainModel(BaseEstimator):
         state_history : list of str
             All the states predicted with the model.
         """
-        probas = self.base_estimator.predict_proba(data)
+        inputs, targets = self._process_sample(data)
+        probas = self.base_estimator.predict_proba(inputs)
 
-        emission_matrix = self._get_emission_matrix(probas, self.init_probas)
+        emission_matrix = _get_state_probabilities(
+            probas, init_probas)
 
         states = self._viterbi(emission_matrix=emission_matrix)
-        # print(states)
         if return_states_history:
-            return states.iloc[-1][-1], states
+            return states[-1][-1], states[:-1]
         else:
-            return states.iloc[-1][-1]
+            return states[-1][-1]
 
     @property
-    def transition_matrix(self):
+    def trainsition_matrix(self):
         return self.transition_graph.to_matrix()
 
-    @property
-    def max_state_length(self):
-        return self.suffix_tree._max_width
-
     def _get_emission_matrix(self, probas, init_probas):
-        state_probas = pd.DataFrame(
-            columns=init_probas.index, index=range(len(probas)))
+        state_probas = pd.DataFrame(columns=states, index=arange(len(probas)))
         for observation in range(len(probas)):
             for state in self.transition_graph.nodes():
                 # the subsequnce is too short for the state
@@ -143,18 +135,17 @@ class MarkovChainModel(BaseEstimator):
                     continue
                 # root node (beginning of a new sequence)
                 if state == '^':
-                    state_probas.loc[observation, state] = 0.0
+                    state_probas.loc[i, state] = 0.0
                 else:
                     ps = []
-                    # calculate probability of the subsequence
+                    # calculate probability of the subsequnce
                     # (assume all symbols are indepent)
-                    # symbol_probas_in_seq = [
-                    #     self.symbol_freqs[symbol] for symbol in state]
+                    symbol_probas_in_seq = [
+                        self.symbol_freqs[symbol] for symbol in state]
                     # calculate probablity of observing the subsequence based
                     # on classifier
-                    for history, p in enumerate(probas[(observation + self.max_state_length - 1 - len(state)):(observation + self.max_state_length - 1)]):
-                        ps.append(
-                            p[self.symbol_encoder_mapping[state[history]]])
+                    for history, p in enumerate(probas[(observation + max_length - 1 - len(state)):(observation + max_length - 1)]):
+                        ps.append(p[symbol_probas_in_seq[history]])
 
                     state_probas.loc[observation, state] = np.prod(ps)
 
@@ -172,11 +163,11 @@ class MarkovChainModel(BaseEstimator):
                               columns=range(sample_length))
         trans2 = pd.DataFrame(index=emission_matrix.columns,
                               columns=range(sample_length))
-        trans1[0] = (emission_matrix.ix[0] * self.init_probas).fillna(0)
+        trans1[0] = emission_matrix.ix[0] * self.init_probas
         trans2[0] = 0
         for i in range(1, sample_length):
             # TODO: check the order of multiplication
-            t = trans1[i - 1].dot(self.transition_matrix.T)
+            t = trans1[i - 1].dot(self.transition_matrix)
             trans1[i] = emission_matrix.ix[i] * (t).max()
             trans2[i] = t.idxmax()
         zt = pd.Series(index=range(sample_length))

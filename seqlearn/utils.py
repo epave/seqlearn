@@ -128,14 +128,11 @@ class SuffixTree(Node, BaseEstimator):
         self.count = len(all_sequences)
         self._symbols = np.unique(all_sequences)
 
-        self.states = ['^']
-
         for width in range(1, self._max_width + 1):
             counts = _get_subsequence_counts(
                 sequences, width, self._min_support)
 
             for sequence, count in counts.items():
-                self.states.append(sequence)
                 parent = self._safe_resolve_parent(sequence)
                 thenode = Node(sequence, parent=parent, count=count)
 
@@ -156,7 +153,7 @@ class TransitionGraph(DiGraph):
         super().__init__()
         self._fitted = False
 
-    def fit(self, suffix_tree, sequences):
+    def fit(self, suffix_tree):
         """Fit the transition probabilities graph.
 
         Parameters
@@ -170,39 +167,52 @@ class TransitionGraph(DiGraph):
             Returns an instance of self.
         """
         self._max_length = suffix_tree._max_width
-        states = suffix_tree.states
-        trans = pd.DataFrame(columns=states[1:], index=states)
-        trans.fillna(0, inplace=True)
-        for symbol, proba in Counter([seq[0] for seq in sequences]).items():
-            if proba > 0:
-                trans.ix['^'][symbol] = proba
+        for node in LevelOrderIter(suffix_tree):
+            if node.name == 'root':
+                self.add_node('^', attr_dict={'count': suffix_tree.count})
+                continue
+            self.add_node(node.name, attr_dict={'count': node.count})
+            if len(node.name) > 1:
+                self.add_edge(node.name[:-1], node.name)
+            else:
+                self.add_edge('^', node.name)
 
-        for state in states:
-            for seq in sequences:
-                for i in range(len(seq) - len(state)):
-                    print(state)
-                    if state == ''.join(seq.values[i:(i + len(state))]):
-                        for j in range(self._max_length, 0, -1):
-                            if j > i:
-                                continue
-                            next_state = ''.join(seq.values[(
-                                i + len(state) + 1 - j):(i + len(state) + 1)])
-                            if next_state in states:
-                                trans.ix[state][next_state] += 1
-                                break
-        # normalizing probabilities
-        for state in states:
-            trans.ix[state] /= trans.ix[state].sum()
+            if node.is_leaf:
+                options = {}
+                for symbol in suffix_tree._symbols:
+                    for start in range(1, len(node.name)):
+                        if node.name == 'AC':
+                            print(node.name[start:] + symbol)
+                        next_node = suffix_tree._safe_resolve_node(
+                            node.name[start:] + symbol)
+                        if next_node is not None:
+                            options[symbol] = {}
+                            options[symbol]['from'] = node.name
+                            options[symbol]['to'] = next_node.name
+                            options[symbol]['count'] = next_node.count
+                            break
+                total_count = sum([option['count']
+                                   for option in options.values()])
+                for option in options.values():
+                    self.add_edge(option['from'], option['to'])
 
-        print(trans)
+        # normalize all probabilites to sum up to 1
+        for node in self.nodes_iter():
+            edges = self.edges(node)
+            total_count = 0
+            for edge in edges:
+                total_count += self.node[edge[1]]['count']
 
-        # storing to graph
-        for state, transition in trans.iteritems():
-            for next_state, proba in transition.iteritems():
-                if proba > 0:
-                    self.add_edge(state, next_state, {'proba': proba})
+            for edge in edges:
+                self.add_edge(edge[0], edge[1], {'proba': round(
+                    self.node[edge[1]]['count'] / total_count, 2)})
 
         self._fitted = True
+        proba_sum = self.to_matrix().sum(0)
+        self._not_one_proba = proba_sum[proba_sum != 1.0]
+        if len(self._not_one_proba):
+            warning.warn(
+                'Some paths in transition graph are tupiks: %s' % self._not_one_proba, FitFailedWarning())
         return self
 
     def to_matrix(self):
