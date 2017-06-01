@@ -86,8 +86,8 @@ class MarkovChainModel(BaseEstimator):
         # calculate initial probability of each symbol
         self.init_probas = pd.Series(
             index=self.transition_graph.to_matrix().index).fillna(0)
-        for symbol, proba in Counter([seq[0] for seq in sequences]).items():
-            self.init_probas.ix[symbol] = proba
+        for symbol, proba in Counter([seq.values[0] for seq in sequences]).items():
+            self.init_probas.ix[symbol] = proba / len(sequences)
 
         # calculate symbol frequences in the sequences
         self.symbol_freqs = Counter(''.join(pd.concat(sequences).values))
@@ -156,7 +156,7 @@ class MarkovChainModel(BaseEstimator):
                         ps.append(
                             p[self.symbol_encoder_mapping[state[history]]])
 
-                    state_probas.loc[observation, state] = np.prod(ps)
+                    state_probas.loc[observation, state] = np.prod(ps) * len(ps)
 
         return state_probas.fillna(0)  # / state_probas.sum(1)
 
@@ -174,16 +174,17 @@ class MarkovChainModel(BaseEstimator):
                               columns=range(sample_length))
         trans1[0] = (emission_matrix.ix[0] * self.init_probas).fillna(0)
         trans2[0] = 0
+        # TODO: check refactoring fot faster matrix opertations
         for i in range(1, sample_length):
-            # TODO: check the order of multiplication
-            t = trans1[i - 1].dot(self.transition_matrix.T)
-            trans1[i] = emission_matrix.ix[i] * (t).max()
-            trans2[i] = t.idxmax()
+            t = (np.tile(trans1[i-1], (len(self.transition_matrix), 1)) * self.transition_matrix.T)
+            trans1[i] = emission_matrix.ix[i] * t.max(axis=1)
+            trans2[i] = t.idxmax(axis=1)
+
         zt = pd.Series(index=range(sample_length))
         xt = pd.Series(index=range(sample_length))
         zt[sample_length - 1] = trans1[sample_length - 1].idxmax()
         xt[sample_length - 1] = zt[sample_length - 1]
-        for i in range(sample_length - 1, 1, -1):
-            zt[i - 1] = trans2[i - 1][zt[i]]
-            xt[i] = zt[i - 1]
+        for i in range(sample_length - 1, 0, -1):
+            zt[i - 1] = trans2[i][zt[i]]
+            xt[i - 1] = zt[i - 1]
         return xt

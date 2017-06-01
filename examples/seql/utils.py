@@ -2,6 +2,7 @@ import warnings
 
 import pandas as pd
 import numpy as np
+import scipy.spatial.distance as distance
 
 from collections import Counter
 from itertools import dropwhile
@@ -173,28 +174,34 @@ class TransitionGraph(DiGraph):
         states = suffix_tree.states
         trans = pd.DataFrame(columns=states[1:], index=states)
         trans.fillna(0, inplace=True)
-        for symbol, proba in Counter([seq[0] for seq in sequences]).items():
+        for symbol, proba in Counter([seq.values[0] for seq in sequences]).items():
             if proba > 0:
                 trans.ix['^'][symbol] = proba
 
         for state in states:
+            state_len = len(state)
             for seq in sequences:
-                for i in range(len(seq) - len(state)):
-                    print(state)
-                    if state == ''.join(seq.values[i:(i + len(state))]):
-                        for j in range(self._max_length, 0, -1):
-                            if j > i:
-                                continue
-                            next_state = ''.join(seq.values[(
-                                i + len(state) + 1 - j):(i + len(state) + 1)])
-                            if next_state in states:
-                                trans.ix[state][next_state] += 1
-                                break
+                seq = ''.join(seq)
+                if state_len == self._max_length:
+                    upto = len(seq)-state_len
+                else:
+                    upto = state_len
+                for i in range(upto):
+                    prev = seq[i:(i+state_len)]
+                    for nxt_state_len in range(self._max_length, 0, -1):
+                        # if nxt_state_len > state_len:
+                        #     nxt = seq[(i+1-state_len):(i+nxt_state_len+1-state_len)]
+                        # else:
+                        #     nxt = seq[(i+1):(i+nxt_state_len+1)]
+                        nxt = seq[(i+state_len+1-nxt_state_len):(i+state_len+1)]
+                        if nxt in trans.columns:
+                            break
+                    trans.ix[prev][nxt] += 1
+
         # normalizing probabilities
         for state in states:
             trans.ix[state] /= trans.ix[state].sum()
 
-        print(trans)
 
         # storing to graph
         for state, transition in trans.iteritems():
@@ -204,6 +211,14 @@ class TransitionGraph(DiGraph):
 
         self._fitted = True
         return self
+
+    def calc_similarity(self, other):
+        adj = self.to_matrix()
+        cols = np.intersect1d(adj.columns, other.columns)
+        rows = np.intersect1d(adj.index, other.index)
+        return 1-distance.cosine(adj[cols].ix[rows].values.flatten(),
+                                 other[cols].ix[rows].values.flatten())
+
 
     def to_matrix(self):
         """Returns adjacency matrix for the transition graph.
